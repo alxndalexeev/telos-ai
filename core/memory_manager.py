@@ -5,7 +5,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 
 import config
-from logging.logger import log_thought # Import from new module structure
+from telos_logging.logger import log_thought # Import from new module structure
 
 # Get the logger for this module
 logger = logging.getLogger(__name__)

@@ -11,7 +11,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import config
-from telos_logging import log_action, log_thought
+from telos_logging.logger import log_action, log_thought
 
 # Configure logging
 logger = logging.getLogger(__name__)

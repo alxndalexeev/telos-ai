@@ -39,7 +39,7 @@ def check_system_resources():
         if resource_warning:
             logger.warning(warning_msg)
             # Import here to avoid circular imports
-            from logging.logger import log_thought
+            from telos_logging.logger import log_thought
             log_thought(f"System resource warning: {warning_msg}")
             return False
             

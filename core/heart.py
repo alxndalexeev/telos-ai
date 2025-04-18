@@ -16,10 +16,11 @@ else:
     print("No .env file found. Using existing environment variables.")
 
 # Import configurations and shared settings first
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
 # Import functionalities from new modules
-from logging.logger import log_action, log_thought
+from telos_logging.logger import log_action, log_thought
 from core.memory_manager import (
     ensure_memory_dir, 
     get_context, 

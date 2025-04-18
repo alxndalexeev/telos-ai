@@ -7,6 +7,7 @@ import json # Added for parsing tasks
 import ast # Added for code validation
 from datetime import datetime # Added for timestamping generated code
 from typing import List, Any
+import re
 
 # Import from the new module structure
 import config
@@ -16,7 +17,7 @@ from architecture.manager import analyze_architecture, propose_architectural_imp
 from architecture.manager import implement_architectural_change, test_architecture_integrity, rollback_architectural_change
 from tests.framework.test_framework import run_tests, generate_test_for_module, generate_integration_test
 from tests.framework.test_framework import analyze_test_coverage, generate_test_report, generate_coverage_report
-from logging.logger import log_thought
+from telos_logging.logger import log_thought
 
 # Define type alias from planner
 Plan = List[str]
@@ -57,30 +58,45 @@ def generate_code_with_llm(prompt: str) -> str:
 
     try:
         response = openai.chat.completions.create(
-            model=config.CODE_LLM_MODEL, # Use specific model for code gen
+            model=config.CODE_LLM_MODEL,
             messages=[
                 {"role": "system", "content": config.CODE_LLM_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt}
             ],
             temperature=config.CODE_LLM_TEMPERATURE,
-            max_tokens=config.CODE_LLM_MAX_TOKENS
+            max_tokens=config.CODE_LLM_MAX_TOKENS,
+            response_format={"type": "text"},  # Keep as text for code generation
+            stream=False,  # Disable streaming for code generation
+            seed=None,  # Optional: Add seed for reproducibility if needed
+            tools=None,  # No tools needed for code generation
+            tool_choice=None  # No tool choice needed for code generation
         )
         # Record the API call
         rate_limiter.record_call("openai")
         
+        if not response.choices or not response.choices[0].message.content:
+            raise ValueError("Empty response received from OpenAI API")
+            
         generated_code = response.choices[0].message.content.strip()
+        
         # Basic cleanup (remove potential markdown code blocks)
         if generated_code.startswith("```") and generated_code.endswith("```"):
-             lines = generated_code.split('\n')
-             if len(lines) > 2:
-                 # Try to remove ```python, ``` etc.
-                 generated_code = '\n'.join(lines[1:-1])
+            lines = generated_code.split('\n')
+            if len(lines) > 2:
+                # Try to remove ```python, ``` etc.
+                generated_code = '\n'.join(lines[1:-1])
 
         logger.info(f"LLM generated code snippet: {generated_code[:100]}...")
         return generated_code
+    except openai.APIError as e:
+        logger.error(f"OpenAI API error: {e}")
+        raise ValueError(f"OpenAI API error: {e}")
+    except openai.RateLimitError as e:
+        logger.error(f"OpenAI rate limit error: {e}")
+        raise ValueError(f"OpenAI rate limit error: {e}")
     except Exception as e:
-        logger.error(f"OpenAI API call failed: {e}")
-        raise # Reraise the exception to be handled in execute_step
+        logger.error(f"Unexpected error during code generation: {e}")
+        raise
 
 # --- Plan Step Execution Helpers ---
 
@@ -172,10 +188,23 @@ def _execute_code_generation(step: str) -> str:
 
         # Save generated code to a timestamped file
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # Try to infer a filename from the prompt (simple example)
-        target_match = [p for p in prompt.split() if '.py' in p]
-        base_filename = target_match[0] if target_match else "generated_code"
-        filename = f"{os.path.splitext(base_filename)[0]}_{timestamp}.py"
+        
+        # Extract target file name from prompt if possible
+        target_file = None
+        # Check for common file patterns in the prompt
+        file_patterns = [r'\b(\w+\.py)\b', r'create (\w+\.py)', r'implement (\w+\.py)', r'develop (\w+\.py)', r'for (\w+\.py)']
+        for pattern in file_patterns:
+            matches = re.findall(pattern, prompt.lower())
+            if matches:
+                target_file = matches[0]
+                break
+        
+        # If no target file found, use default naming
+        if target_file:
+            filename = f"{os.path.splitext(target_file)[0]}_{timestamp}.py"
+        else:
+            filename = f"generated_code_{timestamp}.py"
+            
         filepath = os.path.join(GENERATED_CODE_DIR, filename)
 
         with open(filepath, "w", encoding='utf-8') as f:
@@ -202,6 +231,13 @@ def _apply_code_with_git(target_file_relative, generated_code_file_path, test_cm
         # 2. Overwrite the file as before
         with open(generated_code_file_path, "r", encoding='utf-8') as f:
             new_code = f.read()
+        
+        # Create directory for target file if it doesn't exist
+        target_dir = os.path.dirname(target_file_absolute)
+        if target_dir and not os.path.exists(target_dir):
+            os.makedirs(target_dir, exist_ok=True)
+            logger.info(f"Created directory: {target_dir}")
+            
         with open(target_file_absolute, "w", encoding='utf-8') as f:
             f.write(new_code)
         # 3. Commit the change
@@ -230,8 +266,29 @@ def _apply_code(step: str) -> str:
         msg = "Invalid apply_code format. Expected: apply_code: <target_file> <generated_code_file>"
         logger.error(msg)
         return f"Error: {msg}"
+        
     target_file_relative, generated_code_file_path = parts
     logger.warning(f"Executing step: apply_code - Attempting to overwrite '{target_file_relative}' with content from '{generated_code_file_path}' using git workflow.")
+    
+    # Check if specified generated code file exists
+    full_generated_path = os.path.join(config.BASE_DIR, generated_code_file_path)
+    if not os.path.exists(full_generated_path):
+        # If the specified file doesn't exist, try to find the latest generated code file
+        logger.warning(f"Specified code file {generated_code_file_path} not found. Attempting to find most recent generated code file.")
+        generated_dir = os.path.dirname(full_generated_path)
+        if not os.path.exists(generated_dir):
+            return f"Error: Generated code directory {generated_dir} does not exist."
+            
+        # Find all Python files in the generated code directory
+        generated_files = [f for f in os.listdir(generated_dir) if f.endswith('.py')]
+        if not generated_files:
+            return f"Error: No generated Python files found in {generated_dir}."
+            
+        # Get the most recently created file
+        latest_file = max(generated_files, key=lambda f: os.path.getctime(os.path.join(generated_dir, f)))
+        generated_code_file_path = os.path.join(os.path.relpath(generated_dir, config.BASE_DIR), latest_file)
+        logger.info(f"Found most recent generated code file: {generated_code_file_path}")
+    
     return _apply_code_with_git(target_file_relative, generated_code_file_path)
 
 # --- Log Analysis & Task Generation --- 
@@ -265,6 +322,17 @@ Focus: {focus or 'Identify any recurring errors, inefficiencies, or areas for im
 {log_context}
 
 Based on your analysis, generate a list of new, specific, actionable tasks for Telos to improve itself.
+Tasks MUST be in the format of a list of objects with 'task' and 'details' keys, like this:
+[
+  {{"task": "task_name", "details": "detailed description of what needs to be done"}}
+]
+
+Example:
+[
+  {{"task": "fix_planner", "details": "Fix the planner module to handle response format issues"}},
+  {{"task": "implement_caching", "details": "Implement a caching mechanism for API calls to reduce latency"}}
+]
+
 Output ONLY a valid JSON list of task objects (keys: 'task', 'details'). Return [] if no tasks identified.
 """
         logger.debug(f"Analysis LLM Prompt:\n{prompt[:1000]}...") # Log truncated prompt
@@ -290,12 +358,19 @@ Output ONLY a valid JSON list of task objects (keys: 'task', 'details'). Return 
         # Expecting a JSON object containing the list, e.g. {"tasks": [...]} or just [...] 
         tasks_data = json.loads(response_content)
         if isinstance(tasks_data, list):
-             suggested_tasks_json = json.dumps(tasks_data) # Return as JSON string for update_task_list step
-        elif isinstance(tasks_data, dict) and isinstance(tasks_data.get('tasks'), list):
-             suggested_tasks_json = json.dumps(tasks_data['tasks'])
+            suggested_tasks_json = json.dumps(tasks_data) # Return as JSON string for update_task_list step
+        elif isinstance(tasks_data, dict):
+            if isinstance(tasks_data.get('tasks'), list):
+                suggested_tasks_json = json.dumps(tasks_data['tasks'])
+            elif all(key in tasks_data for key in ['task', 'details']):
+                # Handle single task object
+                suggested_tasks_json = json.dumps([tasks_data])
+            else:
+                logger.error(f"Analysis LLM returned unexpected JSON structure: {response_content}")
+                raise ValueError("Analysis LLM returned invalid task structure.")
         else:
-             logger.error(f"Analysis LLM returned unexpected JSON structure: {response_content}")
-             raise ValueError("Analysis LLM returned invalid task structure.")
+            logger.error(f"Analysis LLM returned unexpected JSON structure: {response_content}")
+            raise ValueError("Analysis LLM returned invalid task structure.")
 
         logger.info(f"Log analysis complete. Suggested tasks JSON: {suggested_tasks_json}")
         return f"Log analysis complete. Suggested tasks: {suggested_tasks_json}"
@@ -309,12 +384,43 @@ def _update_task_list(step: str) -> str:
     json_string = step.replace("update_task_list:", "").strip()
     logger.info(f"Executing step: update_task_list with tasks: {json_string}")
     try:
-        new_tasks = json.loads(json_string)
-        if not isinstance(new_tasks, list):
+        # Parse the JSON string to get the task list
+        raw_tasks = json.loads(json_string)
+        
+        # Process and convert tasks to the expected format
+        if not isinstance(raw_tasks, list):
             raise ValueError("Parsed tasks is not a list.")
-        # Further validation could be added here (e.g., check for 'task'/'details' keys)
-        add_tasks(new_tasks)
-        return f"Successfully added {len(new_tasks)} tasks to the queue."
+            
+        processed_tasks = []
+        for task_item in raw_tasks:
+            # If it's already a dictionary with task and details keys
+            if isinstance(task_item, dict) and 'task' in task_item and 'details' in task_item:
+                processed_tasks.append(task_item)
+            # If it's a string like "execute_task: Do something", convert it
+            elif isinstance(task_item, str):
+                if "execute_task:" in task_item:
+                    task_content = task_item.replace("execute_task:", "").strip()
+                    task_name = task_content.split()[0].lower()
+                    processed_tasks.append({
+                        "task": task_name,
+                        "details": task_content
+                    })
+                else:
+                    # For other task formats, extract a task name and use the string as details
+                    words = task_item.split()
+                    task_name = words[0].lower() if words else "task"
+                    processed_tasks.append({
+                        "task": task_name,
+                        "details": task_item
+                    })
+        
+        if not processed_tasks:
+            logger.warning("No valid tasks found after processing.")
+            return "No valid tasks found to add."
+            
+        # Add the processed tasks to the queue
+        add_tasks(processed_tasks)
+        return f"Successfully added {len(processed_tasks)} tasks to the queue."
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse JSON task list string: {json_string} - Error: {e}")
         return f"Error: Invalid JSON format for new tasks: {e}"

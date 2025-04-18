@@ -10,7 +10,7 @@ from typing import Dict, List, Tuple, Any, Optional
 from datetime import datetime
 
 import config
-from logging.logger import log_action, log_thought
+from telos_logging.logger import log_action, log_thought
 
 logger = logging.getLogger(__name__)
 
