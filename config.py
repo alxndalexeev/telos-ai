@@ -1,21 +1,75 @@
+"""
+Central configuration for Telos AI.
+
+Feel free to overwrite values from an external Python file
+(see load_override()) or use environment variables.
+"""
+
+from pathlib import Path
 import os
+import json
+import importlib.util
+from dotenv import load_dotenv
 
-# --- Core Paths ---
-BASE_DIR = os.path.dirname(__file__)
-MEMORY_DIR = os.path.join(BASE_DIR, 'memory')
-TOOLS_DIR = os.path.join(BASE_DIR, 'tools')
+# -----------------------------------------------------------------------------
+# Load .env (if present) FIRST so that subsequent imports can rely on env vars
+# -----------------------------------------------------------------------------
+load_dotenv()
 
-# --- Memory Files ---
-TASKS_FILE = os.path.join(MEMORY_DIR, 'tasks.json')
-TASK_PROGRESS_FILE = os.path.join(MEMORY_DIR, 'task_progress.json')
-ACTION_LOG = os.path.join(MEMORY_DIR, 'action_log.md')
-THOUGHTS_LOG = os.path.join(MEMORY_DIR, 'thoughts.md')
+# -----------------------------------------------------------------------------
+# Directories
+# -----------------------------------------------------------------------------
+BASE_DIR: Path = Path(__file__).resolve().parent
+MEMORY_DIR: Path = BASE_DIR / "memory"
+TOOLS_DIR: Path = BASE_DIR / "tools"
+
+ACTION_LOG   = MEMORY_DIR / "action_log.md"
+THOUGHTS_LOG = MEMORY_DIR / "thoughts.md"
+TASKS_FILE   = MEMORY_DIR / "tasks.json"
+TASK_PROGRESS_FILE = MEMORY_DIR / "task_progress.json"
+
+# -----------------------------------------------------------------------------
+# Heart parameters
+# -----------------------------------------------------------------------------
+HEARTBEAT_INTERVAL         = int(os.getenv("TELOS_HEARTBEAT_INTERVAL", "15"))   # seconds
+TASK_CHUNK_SIZE            = int(os.getenv("TELOS_TASK_CHUNK_SIZE", "3"))
+SCRIPT_TIMEOUT             = int(os.getenv("TELOS_SCRIPT_TIMEOUT",   "60"))     # seconds
+
+# -----------------------------------------------------------------------------
+# LLM models
+# -----------------------------------------------------------------------------
+PLANNER_LLM_MODEL          = os.getenv("PLANNER_LLM_MODEL",  "gpt-4o-mini")
+CODE_LLM_MODEL             = os.getenv("CODE_LLM_MODEL",     "gpt-4o-mini")
+ANALYSIS_LLM_MODEL         = os.getenv("ANALYSIS_LLM_MODEL", "gpt-3.5-turbo-1106")
+
+PLANNER_LLM_TEMPERATURE    = float(os.getenv("PLANNER_LLM_TEMPERATURE",  "0.3"))
+CODE_LLM_TEMPERATURE       = float(os.getenv("CODE_LLM_TEMPERATURE",     "0.0"))
+ANALYSIS_LLM_TEMPERATURE   = float(os.getenv("ANALYSIS_LLM_TEMPERATURE", "0.2"))
+
+PLANNER_LLM_MAX_TOKENS     = int(os.getenv("PLANNER_LLM_MAX_TOKENS",  "1024"))
+CODE_LLM_MAX_TOKENS        = int(os.getenv("CODE_LLM_MAX_TOKENS",     "2048"))
+ANALYSIS_LLM_MAX_TOKENS    = int(os.getenv("ANALYSIS_LLM_MAX_TOKENS", "1024"))
+
+# Prompts
+CODE_LLM_SYSTEM_PROMPT = "You are Telos' coding co‑pilot. Output ONLY valid Python, no commentary."
+ANALYSIS_SYSTEM_PROMPT = "You are Telos' self‑reflection module. Output ONLY JSON."
+
+# -----------------------------------------------------------------------------
+# Optional override from config_override.py (git‑ignored)
+# -----------------------------------------------------------------------------
+def load_override():
+    override_path = BASE_DIR / "config_override.py"
+    if override_path.exists():
+        spec = importlib.util.spec_from_file_location("config_override", override_path)
+        mod  = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore
+        globals().update({k: v for k, v in mod.__dict__.items() if k.isupper()})
+
+load_override()
 
 # --- Settings ---
-HEARTBEAT_INTERVAL: int = 30  # seconds
 LOG_LEVEL = "INFO"
 LOG_FORMAT = '%(asctime)s - %(levelname)s - %(module)s - %(message)s'
-TASK_CHUNK_SIZE = 3  # Maximum number of steps to execute in a single run
 
 # --- LLM ---
 # Consider moving API keys here if not using environment variables, but .env is safer.

@@ -196,6 +196,7 @@ telos-ai/
 │   └── framework/           # Test framework utilities
 ├── config.py                # Global configuration
 ├── requirements.txt         # Dependencies
+├── sitecustomize.py         # Ensures project root is in PYTHONPATH
 ├── main.py                  # Entry point script
 ├── .env.example             # Environment variables example
 └── README.md                # Documentation
@@ -218,4 +219,4 @@ Since this is a public repository, be mindful of the following security consider
 
 ## 📜 License
 
-This project is licensed under Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0) - see the LICENSE file for details. 
+This project is licensed under Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0) - see the LICENSE file for details.
