@@ -38,9 +38,9 @@ SCRIPT_TIMEOUT             = int(os.getenv("TELOS_SCRIPT_TIMEOUT",   "60"))     
 # -----------------------------------------------------------------------------
 # LLM models
 # -----------------------------------------------------------------------------
-PLANNER_LLM_MODEL          = os.getenv("PLANNER_LLM_MODEL",  "gpt-4o-mini")
-CODE_LLM_MODEL             = os.getenv("CODE_LLM_MODEL",     "gpt-4o-mini")
-ANALYSIS_LLM_MODEL         = os.getenv("ANALYSIS_LLM_MODEL", "gpt-3.5-turbo-1106")
+PLANNER_LLM_MODEL          = os.getenv("PLANNER_LLM_MODEL",  "gpt-4.1")
+CODE_LLM_MODEL             = os.getenv("CODE_LLM_MODEL",     "gpt-4.1")
+ANALYSIS_LLM_MODEL         = os.getenv("ANALYSIS_LLM_MODEL", "gpt-4.1-mini")
 
 PLANNER_LLM_TEMPERATURE    = float(os.getenv("PLANNER_LLM_TEMPERATURE",  "0.3"))
 CODE_LLM_TEMPERATURE       = float(os.getenv("CODE_LLM_TEMPERATURE",     "0.0"))
@@ -76,15 +76,15 @@ LOG_FORMAT = '%(asctime)s - %(levelname)s - %(module)s - %(message)s'
 # OPENAI_API_KEY = "your_key_here"
 
 # Code Generation LLM
-CODE_LLM_MODEL = "gpt-4.1" # Or your preferred model for code generation
-CODE_LLM_TEMPERATURE = 0.5
-CODE_LLM_MAX_TOKENS = 1500
+CODE_LLM_MODEL = "gpt-4.1" # Latest OpenAI model for code generation
+CODE_LLM_TEMPERATURE = 0.0 # Lower temperature for more precise code
+CODE_LLM_MAX_TOKENS = 2048
 CODE_LLM_SYSTEM_PROMPT = "You are a helpful coding assistant. Generate only the Python code based on the user's request."
 
 # Planner LLM
-PLANNER_LLM_MODEL = "gpt-4o" # Can be the same or different model for planning
-PLANNER_LLM_TEMPERATURE = 0.7 # Potentially higher temperature for more creative plans
-PLANNER_LLM_MAX_TOKENS = 500 # Plans should be relatively concise
+PLANNER_LLM_MODEL = "gpt-4.1" # Using the latest model for planning
+PLANNER_LLM_TEMPERATURE = 0.3 # Balanced temperature for creativity and precision
+PLANNER_LLM_MAX_TOKENS = 1024 # Plans should be relatively concise
 PLANNER_SYSTEM_PROMPT = """
 You are an expert planner for an autonomous AI agent named Telos.
 Your goal is to create a step-by-step plan (a JSON list of strings) to achieve the given task, considering the agent's context.
@@ -125,10 +125,10 @@ Constraints:
 Analyze the task and context carefully. Be concise and actionable.
 """
 
-# Analysis LLM (Can reuse planner model initially)
-ANALYSIS_LLM_MODEL = PLANNER_LLM_MODEL
-ANALYSIS_LLM_TEMPERATURE = 0.6
-ANALYSIS_LLM_MAX_TOKENS = 1000 # Allow more space for analysis
+# Analysis LLM (Using a more efficient model for analysis)
+ANALYSIS_LLM_MODEL = "gpt-4.1-mini" # Using smaller but capable model for analysis
+ANALYSIS_LLM_TEMPERATURE = 0.2
+ANALYSIS_LLM_MAX_TOKENS = 1024
 ANALYSIS_SYSTEM_PROMPT = """
 You are an expert analysis AI assisting an autonomous agent named Telos.
 Analyze the provided logs (actions, thoughts) and identify specific, actionable areas for self-improvement.
@@ -137,7 +137,7 @@ Based on your analysis, generate a list of new tasks for the agent to perform.
 Output ONLY a valid JSON list of task objects (each object should have 'task' and 'details' keys).
 Example Output:
 [
-  {"task": "refactor_memory_manager", "details": "Improve error handling in get_context function based on recent warnings."}, 
+  {"task": "enhance_error_handling", "details": "Improve error handling in the task execution pipeline based on recent failures."}, 
   {"task": "optimize_planning_prompt", "details": "Review planner prompt in config.py to provide clearer instructions for code generation steps."}
 ]
 If no specific improvements are identified, return an empty list: []
@@ -198,3 +198,29 @@ TELEGRAM_NOTIFICATIONS_ENABLED = os.getenv("TELEGRAM_NOTIFICATIONS_ENABLED", "Tr
 TELEGRAM_API_KEY = os.getenv("TG_API_KEY", "")  # Bot API token from .env
 TELEGRAM_CHAT_ID = os.getenv("TG_CHAT_ID", "")  # Chat/group ID from .env
 TELEGRAM_NOTIFICATION_LEVEL = os.getenv("TELEGRAM_NOTIFICATION_LEVEL", "important")  # Options: all, important, minimal 
+
+# --- Langfuse Observability ---
+LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")
+LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "") 
+
+# --- Pinecone Vector DB ---
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "telos-memory")
+PINECONE_NAMESPACE = os.getenv("PINECONE_NAMESPACE", "default")
+PINECONE_ENV = os.getenv("PINECONE_ENV", "gcp-starter")  # Optional, for legacy support
+# PINECONE_REGION = os.getenv("PINECONE_REGION", "us-central1")  # Optional
+
+# --- Embedding Model ---
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "3072"))
+
+# --- Available Resources ---
+AVAILABLE_RESOURCES = {
+    "cpu_cores": int(os.getenv("AVAILABLE_CPU_CORES", "4")),  # Number of CPU cores available for processing
+    "memory_gb": float(os.getenv("AVAILABLE_MEMORY_GB", "16.0")),  # RAM available in GB
+    "gpu_memory_gb": float(os.getenv("AVAILABLE_GPU_MEMORY_GB", "0.0")),  # GPU memory available in GB
+    "disk_space_gb": float(os.getenv("AVAILABLE_DISK_SPACE_GB", "100.0")),  # Disk space available in GB
+    "max_concurrent_tasks": int(os.getenv("MAX_CONCURRENT_TASKS", "3")),  # Maximum number of tasks to run concurrently
+    "max_daily_api_cost": float(os.getenv("MAX_DAILY_API_COST", "10.0")),  # Maximum daily cost for API calls in USD
+} 

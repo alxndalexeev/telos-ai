@@ -11,6 +11,7 @@ from datetime import datetime
 import traceback
 import asyncio
 from typing import Optional
+import re
 
 import config
 from telegram import Bot
@@ -32,6 +33,16 @@ else:
     if config.TELEGRAM_NOTIFICATIONS_ENABLED:
         logger.warning("Telegram notifications are enabled but API key or chat ID is missing")
 
+def escape_html(text: str) -> str:
+    """Escape Telegram HTML special characters."""
+    if not text:
+        return text
+    return (
+        text.replace('&', '&amp;')
+            .replace('<', '&lt;')
+            .replace('>', '&gt;')
+    )
+
 def format_message(title, body=None, level="info", include_timestamp=True):
     """Format a message with timestamp, title, and optional body."""
     icon_map = {
@@ -47,29 +58,12 @@ def format_message(title, body=None, level="info", include_timestamp=True):
     icon = icon_map.get(level.lower(), "🔹")
     timestamp = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " if include_timestamp else ""
     
-    # Use markdown formatting for Telegram
-    message = f"{icon} {timestamp}*{title}*"
+    # Only escape the title, not the body (if body is already HTML)
+    message = f"{icon} {timestamp}<b>{escape_html(title)}</b>"
     if body:
-        message += f"\n{body}"
+        message += f"\n{body}"  # Do NOT escape here!
     
     return message
-
-async def send_telegram_message(chat_id, text, parse_mode=ParseMode.MARKDOWN):
-    """Send a message using Telegram Bot API asynchronously."""
-    if not telegram_bot:
-        logger.debug("Telegram bot not initialized, skipping message")
-        return False
-    
-    try:
-        await telegram_bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            parse_mode=parse_mode
-        )
-        return True
-    except TelegramError as e:
-        logger.error(f"Telegram error: {e}")
-        return False
 
 def send_notification(title, body=None, level="info", importance="normal"):
     """
@@ -94,21 +88,24 @@ def send_notification(title, body=None, level="info", importance="normal"):
     if telegram_bot:
         try:
             formatted_message = format_message(title, body, level)
-            # Run the async function in a new event loop
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(
-                send_telegram_message(
-                    config.TELEGRAM_CHAT_ID, 
-                    formatted_message
+            async def send_async():
+                await telegram_bot.send_message(
+                    chat_id=config.TELEGRAM_CHAT_ID,
+                    text=formatted_message,
+                    parse_mode=ParseMode.HTML
                 )
-            )
-            loop.close()
-            if result:
-                logger.debug(f"Telegram notification sent: {title}")
-            else:
-                logger.warning(f"Failed to send Telegram notification: {title}")
-                success = False
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(send_async())
+                else:
+                    loop.run_until_complete(send_async())
+            except RuntimeError:
+                asyncio.run(send_async())
+            logger.debug(f"Telegram notification sent: {title}")
+        except TelegramError as e:
+            logger.error(f"Telegram error: {e}")
+            success = False
         except Exception as e:
             logger.error(f"Failed to send Telegram notification: {e}")
             success = False
@@ -149,11 +146,44 @@ def notify_shutdown():
         importance="normal"
     )
 
+def format_plan_for_telegram(plan):
+    def format_step(step):
+        if ':' in step:
+            step_type, content = step.split(':', 1)
+            step_type = step_type.strip()
+            content = content.strip()
+            return f"• <b>{escape_html(step_type)}:</b> {escape_html(content)}"
+        else:
+            return f"• {escape_html(step)}"
+    if isinstance(plan, list):
+        return '\n'.join([format_step(str(step)) for step in plan])
+    elif isinstance(plan, str):
+        if plan.startswith("[") and plan.endswith("]"):
+            try:
+                import ast
+                plan_list = ast.literal_eval(plan)
+                if isinstance(plan_list, list):
+                    return '\n'.join([format_step(str(step)) for step in plan_list])
+            except Exception:
+                pass
+        if ", '" in plan or "'," in plan:
+            steps = [s.strip(" '[]") for s in plan.split(",") if s.strip()]
+            return '\n'.join([format_step(str(step)) for step in steps])
+        return escape_html(plan)
+    else:
+        return escape_html(str(plan))
+
 def notify_decision(decision, details=None):
-    """Send a notification about a decision made by Telos."""
+    """Send a notification about a decision made by Telos with improved plan formatting."""
+    formatted_details = None
+    if details and details.startswith("Plan:"):
+        plan_part = details[len("Plan:"):].strip()
+        formatted_details = f"<b>Plan:</b>\n{format_plan_for_telegram(plan_part)}"
+    elif details:
+        formatted_details = details
     send_notification(
         f"Decision: {decision}",
-        details,
+        formatted_details,
         level="decision",
         importance="important"
     )

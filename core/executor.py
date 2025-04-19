@@ -14,7 +14,7 @@ import tempfile # Added for _apply_code_with_git
 
 # Import from the new module structure
 import config
-from core.memory_manager import add_tasks
+from core.tasks import add_tasks
 # from core.api_manager import rate_limiter # Removed, handled by openai_helper
 from core.openai_helper import openai_call # Import the helper function
 from architecture.manager import analyze_architecture, propose_architectural_improvements
@@ -54,16 +54,7 @@ except Exception as e:
 def generate_code_with_llm(prompt: str) -> str:
     """Generates code using the OpenAI API based on the provided prompt."""
     logger.info(f"Sending code generation request to LLM for prompt: {prompt[:100]}...")
-    # API key check and rate limiting are now handled within openai_call
-    # if not openai.api_key:
-    #     raise ValueError("OpenAI API key is not configured.")
-    # 
-    # # Check API rate limit before making the call
-    # if not rate_limiter.can_make_call("openai"):
-    #     raise ValueError("OpenAI API rate limit reached. Try again later.")
-
     try:
-        # Use the helper function
         response = openai_call(
             model=config.CODE_LLM_MODEL,
             messages=[
@@ -72,37 +63,21 @@ def generate_code_with_llm(prompt: str) -> str:
             ],
             temperature=config.CODE_LLM_TEMPERATURE,
             max_tokens=config.CODE_LLM_MAX_TOKENS,
-            response_format={"type": "text"},  # Keep as text for code generation
-            # Other parameters like stream, seed, tools are passed via **kwargs if needed
+            response_format={"type": "text"},
+            trace_name=f"codegen",
+            trace_metadata={"prompt": prompt}
         )
-        # # Record the API call - REMOVED (handled in openai_helper)
-        # rate_limiter.record_call("openai")
-        
         if not response.choices or not response.choices[0].message.content:
             raise ValueError("Empty response received from OpenAI API")
-            
         generated_code = response.choices[0].message.content.strip()
-        
-        # Basic cleanup (remove potential markdown code blocks)
         if generated_code.startswith("```") and generated_code.endswith("```"):
             lines = generated_code.split('\n')
             if len(lines) > 2:
-                # Try to remove ```python, ``` etc.
                 generated_code = '\n'.join(lines[1:-1])
-
         logger.info(f"LLM generated code snippet: {generated_code[:100]}...")
         return generated_code
-    # Error logging is now handled within openai_call, re-raising the specific error
-    # except openai.APIError as e:
-    #     logger.error(f"OpenAI API error: {e}")
-    #     raise ValueError(f"OpenAI API error: {e}")
-    # except openai.RateLimitError as e:
-    #     logger.error(f"OpenAI rate limit error: {e}")
-    #     raise ValueError(f"OpenAI rate limit error: {e}")
     except Exception as e:
-        # Catch errors raised by openai_call or other issues
         logger.error(f"Error during code generation process: {e}")
-        # Re-raise the original error to be handled upstream if necessary
         raise
 
 # --- Plan Step Execution Helpers ---
@@ -269,9 +244,15 @@ Return ONLY the improved code without explanations or markdown formatting.
                 {"role": "system", "content": "You are an expert code reviewer. Your task is to improve code by fixing bugs, adding error handling, improving readability, and ensuring best practices are followed. Return only the improved code without explanations or markdown."},
                 {"role": "user", "content": review_prompt}
             ],
-            temperature=config.CODE_REVIEW_TEMPERATURE,  # Use temperature from config
+            temperature=config.CODE_REVIEW_TEMPERATURE,
             max_tokens=config.CODE_LLM_MAX_TOKENS,
-            response_format={"type": "text"},  # Plain text for code
+            response_format={"type": "text"},
+            trace_name=f"code-review",
+            trace_metadata={
+                "target_file": target_file_name,
+                "prompt": prompt,
+                "code_length": len(generated_code) if generated_code else 0
+            }
         )
         
         improved_code = response.choices[0].message.content.strip()
@@ -501,6 +482,8 @@ Output ONLY a valid JSON list of task objects (keys: 'task', 'details'). Return 
             temperature=config.ANALYSIS_LLM_TEMPERATURE,
             max_tokens=config.ANALYSIS_LLM_MAX_TOKENS,
              response_format={ "type": "json_object" }, # Request JSON output
+            trace_name=f"analyze-logs",
+            trace_metadata={"step": step, "prompt": prompt}
         )
         response_content = response.choices[0].message.content
         logger.debug(f"Analysis LLM Raw Response: {response_content}")
@@ -532,62 +515,36 @@ Output ONLY a valid JSON list of task objects (keys: 'task', 'details'). Return 
 
 def _update_task_list(step: str) -> str:
     """Handles the 'update_task_list:' plan step."""
-    json_string = step.replace("update_task_list:", "").strip()
-    logger.info(f"Executing step: update_task_list with tasks: {json_string}")
+    # Remove the prefix and trim
+    task_info = step.replace("update_task_list:", "").strip()
     try:
-        # Parse the JSON string to get the task list
-        raw_tasks = json.loads(json_string)
+        # Parse task info to get a valid JSON object
+        task_data = json.loads(task_info)
         
-        # Process and convert tasks to the expected format
-        if not isinstance(raw_tasks, list):
-            raise ValueError("Parsed tasks is not a list.")
-            
-        processed_tasks = []
-        for task_item in raw_tasks:
-            # If it's already a dictionary with task and details keys
-            if isinstance(task_item, dict) and 'task' in task_item and 'details' in task_item:
-                processed_tasks.append(task_item)
-            # If it's a string like "execute_task: Do something", convert it
-            elif isinstance(task_item, str):
-                if "execute_task:" in task_item:
-                    task_content = task_item.replace("execute_task:", "").strip()
-                    task_name = task_content.split()[0].lower()
-                    processed_tasks.append({
-                        "task": task_name,
-                        "details": task_content
-                    })
-                else:
-                    # For other task formats, extract a task name and use the string as details
-                    words = task_item.split()
-                    task_name = words[0].lower() if words else "task"
-                    processed_tasks.append({
-                        "task": task_name,
-                        "details": task_item
-                    })
-        
-        if not processed_tasks:
-            logger.warning("No valid tasks found after processing.")
-            return "No valid tasks found to add."
-            
-        # Add the processed tasks to the queue
-        add_tasks(processed_tasks)
-        return f"Successfully added {len(processed_tasks)} tasks to the queue."
+        # Add task(s) if in proper format
+        if isinstance(task_data, list):
+            add_tasks(task_data)
+            return f"Added {len(task_data)} tasks to the task list"
+        elif isinstance(task_data, dict):
+            add_tasks([task_data])
+            return "Added 1 task to the task list"
+        else:
+            logger.error(f"Invalid task data format: {type(task_data)}")
+            return f"Invalid task data format"
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse JSON task list string: {json_string} - Error: {e}")
-        return f"Error: Invalid JSON format for new tasks: {e}"
+        logger.error(f"Invalid JSON in task info: {e}")
+        return f"Invalid JSON data for tasks: {e}"
     except Exception as e:
-        logger.error(f"Failed to add tasks via memory_manager: {e}")
-        return f"Error updating task list: {e}"
+        logger.error(f"Failed to add tasks via tasks module: {e}")
+        return f"Error adding tasks: {e}"
 
 # --- Misc Execution Helpers ---
 
 def _execute_log_thought(step: str) -> str:
-    """Handles the 'log_thought:' plan step directly."""
+    """Handles the 'log_thought:' plan step."""
     thought = step.replace("log_thought:", "").strip()
-    logger.info(f"Executing step: log_thought - '{thought}'")
-    # Note: The main loop also logs thoughts. This allows logging *during* plan execution.
-    log_thought(f"Plan Step: {thought}") # Use imported log_thought from memory_manager
-    return f"Logged thought: {thought}"
+    log_thought(f"Plan Step: {thought}")
+    return "Thought recorded in logs"
 
 def _execute_unknown(step: str) -> str:
     """Handles unrecognized plan steps."""

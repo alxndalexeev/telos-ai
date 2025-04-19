@@ -436,7 +436,7 @@ class ArchitectureManager:
         summary = {
             "module_count": len(analysis["modules"]),
             "entry_points": analysis["entry_points"],
-            "core_modules": [m["name"] for m in analysis["modules"] if m["name"] in ["heart", "executor", "planner", "memory_manager"]],
+            "core_modules": [m["name"] for m in analysis["modules"] if m["name"] in ["heart", "executor", "planner", "tasks"]],
             "metrics": analysis["metrics"]
         }
         

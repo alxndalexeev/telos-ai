@@ -9,7 +9,7 @@ import config
 # from core.api_manager import rate_limiter # Removed direct import
 from core.openai_helper import openai_call # Import the helper
 
-# Define type aliases used from memory_manager
+# Define type aliases for clarity
 Context = Dict[str, str]
 Task = Dict[str, Any]
 Plan = List[str]
@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 # This may be moved to config.py in future
 SYSTEM_PROMPT = config.PLANNER_SYSTEM_PROMPT # Use prompt from config
 
-def create_plan(task: Task, context: Context) -> Plan:
-    """Create a plan using an LLM based on the task and context."""
+def create_plan(task: Task, context: Context, reviewer_hint: str = None) -> Plan:
+    """Create a plan using an LLM based on the task, context, and optional reviewer hint."""
     logger.info(f"Creating LLM-powered plan for task: {task.get('task')}")
 
     # API Key check is handled by openai_call
@@ -71,7 +71,10 @@ Task Details: {task.get('details')}
 
 And the following context about the agent:
 {context_summary}
-
+"""
+    if reviewer_hint:
+        prompt += f"\nReviewer feedback to consider when planning: {reviewer_hint}\n"
+    prompt += """
 Generate a plan as a JSON list of strings according to the available step formats.
 Output ONLY the JSON list.
 Plan:
@@ -90,9 +93,19 @@ Plan:
             ],
             temperature=config.PLANNER_LLM_TEMPERATURE,
             max_tokens=config.PLANNER_LLM_MAX_TOKENS,
-            response_format={"type": "json_object"} # Corrected response_format
+            response_format={"type": "json_object"},
+            trace_name=f"planner-create-plan",
+            trace_metadata={
+                "task": task,
+                "reviewer_hint": reviewer_hint,
+                "context_keys": list(context.keys())
+            }
         )
-        response_content = response.choices[0].message.content.strip()
+        message = response.choices[0].message
+        if not message or not getattr(message, "content", None):
+            logger.error("LLM returned no content in response")
+            return _create_fallback_plan(task)
+        response_content = message.content.strip()
         logger.debug(f"Planner LLM Raw Response: {response_content}")
         
         # Record the API call - REMOVED (handled in openai_helper)

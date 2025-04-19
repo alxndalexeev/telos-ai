@@ -1,4 +1,5 @@
-import openai, os, logging
+import os, logging
+from langfuse.openai import openai
 import config # Assuming config.py is at the project root
 from core.api_manager import rate_limiter
 
@@ -9,10 +10,11 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 if not openai.api_key:
     logger.warning("OPENAI_API_KEY environment variable not found. OpenAI calls will fail.")
 
-def openai_call(model: str, messages, **kwargs):
+def openai_call(model: str, messages, trace_name=None, trace_metadata=None, **kwargs):
     """
     Wrapper for OpenAI chat completion calls that handles API key check and rate limiting.
     Raises ValueError if API key is not set or RuntimeError if rate limit is exceeded.
+    Optionally accepts trace_name and trace_metadata for improved Langfuse trace tracking.
     """
     if not openai.api_key:
         raise ValueError("OpenAI API key is not configured.")
@@ -20,6 +22,12 @@ def openai_call(model: str, messages, **kwargs):
     if not rate_limiter.can_make_call("openai"):
         logger.warning("OpenAI API rate limit reached. Call aborted.")
         raise RuntimeError("OpenAI quota exceeded")
+
+    # Inject Langfuse trace name and metadata if provided
+    if trace_name is not None:
+        kwargs["name"] = trace_name
+    if trace_metadata is not None:
+        kwargs["metadata"] = trace_metadata
 
     try:
         response = openai.chat.completions.create(
