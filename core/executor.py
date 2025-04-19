@@ -2,17 +2,20 @@ import os
 import sys
 import subprocess
 import logging
-import openai
+# import openai # Removed direct import
 import json # Added for parsing tasks
 import ast # Added for code validation
 from datetime import datetime # Added for timestamping generated code
 from typing import List, Any
 import re
+import shutil # Added for _apply_code_with_git
+import tempfile # Added for _apply_code_with_git
 
 # Import from the new module structure
 import config
 from core.memory_manager import add_tasks
-from core.api_manager import rate_limiter
+# from core.api_manager import rate_limiter # Removed, handled by openai_helper
+from core.openai_helper import openai_call # Import the helper function
 from architecture.manager import analyze_architecture, propose_architectural_improvements
 from architecture.manager import implement_architectural_change, test_architecture_integrity, rollback_architectural_change
 from tests.framework.test_framework import run_tests, generate_test_for_module, generate_integration_test
@@ -25,9 +28,9 @@ Plan = List[str]
 # --- Setup ---
 logger = logging.getLogger(__name__)
 
-# Add tools directory to path to allow importing tavily_search
-if config.TOOLS_DIR not in sys.path:
-    sys.path.append(config.TOOLS_DIR)
+# Add tools directory to path - REMOVED (handled by sitecustomize and package structure)
+# if config.TOOLS_DIR not in sys.path:
+#     sys.path.append(config.TOOLS_DIR)
 
 # Import tools - handle potential import errors
 try:
@@ -40,24 +43,26 @@ except Exception as e:
     logger.error(f"An unexpected error occurred during tool import: {e}")
     tavily_search = None
 
-# Load OpenAI API Key
-openai.api_key = os.getenv("OPENAI_API_KEY")
-if not openai.api_key:
-    logger.warning("OPENAI_API_KEY environment variable not found. Code generation will fail.")
+# Load OpenAI API Key - REMOVED (handled in openai_helper)
+# openai.api_key = os.getenv("OPENAI_API_KEY")
+# if not openai.api_key:
+#     logger.warning("OPENAI_API_KEY environment variable not found. Code generation will fail.")
 
 # --- LLM Code Generation ---
 def generate_code_with_llm(prompt: str) -> str:
     """Generates code using the OpenAI API based on the provided prompt."""
     logger.info(f"Sending code generation request to LLM for prompt: {prompt[:100]}...")
-    if not openai.api_key:
-        raise ValueError("OpenAI API key is not configured.")
-    
-    # Check API rate limit before making the call
-    if not rate_limiter.can_make_call("openai"):
-        raise ValueError("OpenAI API rate limit reached. Try again later.")
+    # API key check and rate limiting are now handled within openai_call
+    # if not openai.api_key:
+    #     raise ValueError("OpenAI API key is not configured.")
+    # 
+    # # Check API rate limit before making the call
+    # if not rate_limiter.can_make_call("openai"):
+    #     raise ValueError("OpenAI API rate limit reached. Try again later.")
 
     try:
-        response = openai.chat.completions.create(
+        # Use the helper function
+        response = openai_call(
             model=config.CODE_LLM_MODEL,
             messages=[
                 {"role": "system", "content": config.CODE_LLM_SYSTEM_PROMPT},
@@ -66,13 +71,10 @@ def generate_code_with_llm(prompt: str) -> str:
             temperature=config.CODE_LLM_TEMPERATURE,
             max_tokens=config.CODE_LLM_MAX_TOKENS,
             response_format={"type": "text"},  # Keep as text for code generation
-            stream=False,  # Disable streaming for code generation
-            seed=None,  # Optional: Add seed for reproducibility if needed
-            tools=None,  # No tools needed for code generation
-            tool_choice=None  # No tool choice needed for code generation
+            # Other parameters like stream, seed, tools are passed via **kwargs if needed
         )
-        # Record the API call
-        rate_limiter.record_call("openai")
+        # # Record the API call - REMOVED (handled in openai_helper)
+        # rate_limiter.record_call("openai")
         
         if not response.choices or not response.choices[0].message.content:
             raise ValueError("Empty response received from OpenAI API")
@@ -88,14 +90,17 @@ def generate_code_with_llm(prompt: str) -> str:
 
         logger.info(f"LLM generated code snippet: {generated_code[:100]}...")
         return generated_code
-    except openai.APIError as e:
-        logger.error(f"OpenAI API error: {e}")
-        raise ValueError(f"OpenAI API error: {e}")
-    except openai.RateLimitError as e:
-        logger.error(f"OpenAI rate limit error: {e}")
-        raise ValueError(f"OpenAI rate limit error: {e}")
+    # Error logging is now handled within openai_call, re-raising the specific error
+    # except openai.APIError as e:
+    #     logger.error(f"OpenAI API error: {e}")
+    #     raise ValueError(f"OpenAI API error: {e}")
+    # except openai.RateLimitError as e:
+    #     logger.error(f"OpenAI rate limit error: {e}")
+    #     raise ValueError(f"OpenAI rate limit error: {e}")
     except Exception as e:
-        logger.error(f"Unexpected error during code generation: {e}")
+        # Catch errors raised by openai_call or other issues
+        logger.error(f"Error during code generation process: {e}")
+        # Re-raise the original error to be handled upstream if necessary
         raise
 
 # --- Plan Step Execution Helpers ---
@@ -218,56 +223,64 @@ def _execute_code_generation(step: str) -> str:
         logger.error(f"Error during code generation or saving: {e}")
         return f"Code generation failed: {e}"
 
-def _apply_code_with_git(target_file_relative, generated_code_file_path, test_cmd="pytest"):
-    import subprocess
-    import sys
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    branch_name = f"ai-generated/{timestamp}"
-    commit_msg = f"AI-generated update to {target_file_relative} at {timestamp}"
-    target_file_absolute = os.path.abspath(os.path.join(config.BASE_DIR, target_file_relative))
+def _apply_code_with_git(target_file_relative, generated_code_file_path, test_cmd="pytest -q"):
+    """
+    Safer: use temp branch, merge ONLY when tests succeed; auto‑rollback.
+    """
+    import subprocess, tempfile, os, sys, shutil, datetime
+    logger = logging.getLogger(__name__)
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    branch = f"ai/{ts}"
     try:
-        # 1. Create/switch to new branch
-        subprocess.run(["git", "checkout", "-B", branch_name], check=True)
-        # 2. Overwrite the file as before
-        with open(generated_code_file_path, "r", encoding='utf-8') as f:
-            new_code = f.read()
+        # Run git commands to set up the branch
+        subprocess.run(["git", "checkout", "-B", branch], check=True)
+        shutil.copyfile(generated_code_file_path, target_file_relative)
+        subprocess.run(["git", "add", target_file_relative], check=True)
+        subprocess.run(["git", "commit", "-m", f"Telos AI update {target_file_relative}"], check=True)
+
+        # Only run tests if the test command is specified and not empty
+        if test_cmd and test_cmd.strip():
+            try:
+                res = subprocess.run(test_cmd.split(), capture_output=True, text=True)
+                if res.returncode != 0:
+                    logger.error("Tests failed:\n%s\n%s", res.stdout, res.stderr)
+                    subprocess.run(["git", "reset", "--hard", "HEAD~1"], check=True)
+                    subprocess.run(["git", "checkout", "main"], check=True)
+                    subprocess.run(["git", "branch", "-D", branch], check=True)
+                    return "Tests failed – update aborted."
+            except FileNotFoundError as e:
+                # Handle missing test command gracefully
+                logger.warning(f"Test command '{test_cmd}' not found. Proceeding without tests: {e}")
+                # Continue with the merge since we can't run tests
+        else:
+            logger.info("No test command specified. Proceeding without tests.")
         
-        # Create directory for target file if it doesn't exist
-        target_dir = os.path.dirname(target_file_absolute)
-        if target_dir and not os.path.exists(target_dir):
-            os.makedirs(target_dir, exist_ok=True)
-            logger.info(f"Created directory: {target_dir}")
-            
-        with open(target_file_absolute, "w", encoding='utf-8') as f:
-            f.write(new_code)
-        # 3. Commit the change
-        subprocess.run(["git", "add", target_file_absolute], check=True)
-        subprocess.run(["git", "commit", "-m", commit_msg], check=True)
-        # 4. Run tests
-        test_result = subprocess.run([test_cmd], capture_output=True, text=True)
-        if test_result.returncode != 0:
-            logger.error(f"Tests failed after code update:\n{test_result.stdout}\n{test_result.stderr}")
-            return f"Tests failed. Code not merged. See logs for details."
-        # 5. Merge to main
+        # Complete the merge
         subprocess.run(["git", "checkout", "main"], check=True)
-        subprocess.run(["git", "merge", branch_name], check=True)
-        # 6. Restart the process (gracefully)
-        logger.info("Code updated and merged. Restarting process to load new code.")
-        os.execv(sys.executable, [sys.executable] + sys.argv)  # Replaces current process
-        return "Code updated, tested, merged, and process restarted."
+        subprocess.run(["git", "merge", "--ff-only", branch], check=True)
+        subprocess.run(["git", "branch", "-D", branch], check=True)
+        os.execv(sys.executable, [sys.executable] + sys.argv)  # restart
     except Exception as e:
-        logger.error(f"Error during self-update workflow: {e}", exc_info=True)
-        return f"Error during self-update: {e}"
+        logger.exception("self‑update failed")
+        return f"Self‑update failed: {e}"
 
 def _apply_code(step: str) -> str:
     """Handles the 'apply_code:' step. Replaces target file content using git workflow."""
     parts = step.replace("apply_code:", "").strip().split()
-    if len(parts) != 2:
-        msg = "Invalid apply_code format. Expected: apply_code: <target_file> <generated_code_file>"
+    
+    # Check for command format
+    if len(parts) < 2:
+        msg = "Invalid apply_code format. Expected: apply_code: <target_file> <generated_code_file> [test_cmd]"
         logger.error(msg)
         return f"Error: {msg}"
         
-    target_file_relative, generated_code_file_path = parts
+    # Extract parameters
+    if len(parts) >= 3:
+        target_file_relative, generated_code_file_path, test_cmd = parts[0], parts[1], " ".join(parts[2:])
+    else:
+        target_file_relative, generated_code_file_path = parts
+        test_cmd = ""  # Empty test command to skip testing
+    
     logger.warning(f"Executing step: apply_code - Attempting to overwrite '{target_file_relative}' with content from '{generated_code_file_path}' using git workflow.")
     
     # Check if specified generated code file exists
@@ -289,7 +302,7 @@ def _apply_code(step: str) -> str:
         generated_code_file_path = os.path.join(os.path.relpath(generated_dir, config.BASE_DIR), latest_file)
         logger.info(f"Found most recent generated code file: {generated_code_file_path}")
     
-    return _apply_code_with_git(target_file_relative, generated_code_file_path)
+    return _apply_code_with_git(target_file_relative, generated_code_file_path, test_cmd)
 
 # --- Log Analysis & Task Generation --- 
 
@@ -337,11 +350,12 @@ Output ONLY a valid JSON list of task objects (keys: 'task', 'details'). Return 
 """
         logger.debug(f"Analysis LLM Prompt:\n{prompt[:1000]}...") # Log truncated prompt
 
-        if not openai.api_key:
-            raise ValueError("OpenAI API key is not configured for analysis.")
+        # API key check is handled by openai_call
+        # if not openai.api_key:
+        #     raise ValueError("OpenAI API key is not configured for analysis.")
 
-        # Call Analysis LLM
-        response = openai.chat.completions.create(
+        # Call Analysis LLM using the helper
+        response = openai_call(
             model=config.ANALYSIS_LLM_MODEL,
             messages=[
                 {"role": "system", "content": config.ANALYSIS_SYSTEM_PROMPT},

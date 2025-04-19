@@ -1,12 +1,13 @@
 import logging
 import json
 import os
-import openai
+# import openai # Removed direct import
 from typing import List, Dict, Any
 
 # Import from the new module structure
 import config
-from core.api_manager import rate_limiter
+# from core.api_manager import rate_limiter # Removed direct import
+from core.openai_helper import openai_call # Import the helper
 
 # Define type aliases used from memory_manager
 Context = Dict[str, str]
@@ -15,66 +16,40 @@ Plan = List[str]
 
 logger = logging.getLogger(__name__)
 
-# Load OpenAI API Key (needed for planning)
-openai.api_key = os.getenv("OPENAI_API_KEY")
-if not openai.api_key:
-    logger.warning("OPENAI_API_KEY environment variable not found. Planning LLM will fail.")
+# Load OpenAI API Key - REMOVED (handled in openai_helper)
+# openai.api_key = os.getenv("OPENAI_API_KEY")
+# if not openai.api_key:
+#     logger.warning("OPENAI_API_KEY environment variable not found. Planning LLM will fail.")
 
 # Store the system prompt here to make it easily replaceable
 # This may be moved to config.py in future
-SYSTEM_PROMPT = """
-You are an expert planner for an autonomous AI agent named Telos.
-Your goal is to create a step-by-step plan (a JSON list of strings) to achieve the given task, considering the agent's context.
-Output ONLY a valid JSON list of strings, where each string is an actionable step.
-
-Available step formats (MUST start with one of these prefixes):
-- 'log_thought: <message>' (To record a thought or reflection)
-- 'execute_task: <description>' (For general tasks)
-- 'analyze_logs: <optional_focus>' (To analyze logs)
-- 'update_task_list: <json_list_of_tasks>' (To add new tasks)
-- 'tool_call: <tool_name> <query>' (To use external tools)
-- 'code_generation: <prompt>' (To generate code)
-- 'apply_code: <target_file> <generated_code_file>' (To apply code)
-- 'generate_unit_tests: <module_path>' (To generate tests)
-- 'run_tests: <type> <options>' (To run tests)
-- 'analyze_test_coverage:' (To analyze coverage)
-- 'generate_coverage_report:' (To generate report)
-
-IMPORTANT: When using 'update_task_list:', the task list MUST be a JSON array of task objects with 'task' and 'details' keys.
-Example for update_task_list:
-"update_task_list: [{\"task\": \"implement_cache\", \"details\": \"Implement a memory cache for API calls\"}, {\"task\": \"add_metrics\", \"details\": \"Add better instrumentation with metrics tracking\"}]"
-
-Example Task: {'task': 'implement', 'details': 'Add metrics tracking'}
-Example Plan Output:
-[
-  "log_thought: Starting implementation of metrics tracking system",
-  "code_generation: Create a metrics tracking module with functions for recording and analyzing performance metrics",
-  "apply_code: metrics_tracker.py memory/generated_code/metrics_tracker.py",
-  "generate_unit_tests: metrics_tracker.py",
-  "run_tests: unit filter=metrics_tracker",
-  "log_thought: Metrics tracking system implementation complete"
-]
-
-Constraints:
-- Each step MUST start with one of the defined prefixes
-- Steps must be in a logical sequence
-- Code generation steps should include detailed prompts
-- Output ONLY the JSON list of strings
-- Do not include explanations or comments
-"""
+SYSTEM_PROMPT = config.PLANNER_SYSTEM_PROMPT # Use prompt from config
 
 def create_plan(task: Task, context: Context) -> Plan:
     """Create a plan using an LLM based on the task and context."""
     logger.info(f"Creating LLM-powered plan for task: {task.get('task')}")
 
-    if not openai.api_key:
-        logger.error("Cannot create LLM plan: OpenAI API key is not configured.")
-        return _create_fallback_plan(task)
+    # API Key check is handled by openai_call
+    # if not openai.api_key:
+    #     logger.error("Cannot create LLM plan: OpenAI API key is not configured.")
+    #     return _create_fallback_plan(task)
         
-    # Check API rate limit before making the call
-    if not rate_limiter.can_make_call("openai"):
-        logger.warning("API rate limit reached. Using fallback plan")
-        return _create_fallback_plan(task)
+    # Rate limit check is handled by openai_call
+    # if not rate_limiter.can_make_call("openai"):
+    #     logger.warning("API rate limit reached. Using fallback plan")
+    #     return _create_fallback_plan(task)
+
+    # Define the valid step prefixes at the beginning of the function
+    valid_prefixes = [
+        "log_thought:", "execute_task:", "analyze_logs:", 
+        "update_task_list:", "tool_call:", "code_generation:",
+        "apply_code:", "generate_unit_tests:", "run_tests:",
+        "analyze_test_coverage:", "generate_coverage_report:",
+        # Architecture prefixes
+        "analyze_architecture:", "propose_architecture_improvements:",
+        "implement_architecture_change:", "test_architecture:",
+        "rollback_architecture:"
+    ]
 
     # --- Construct the Prompt --- 
     # Select relevant context to provide to the LLM (avoiding excessive length)
@@ -106,7 +81,8 @@ Plan:
 
     # --- Call the LLM --- 
     try:
-        response = openai.chat.completions.create(
+        # Use the helper function
+        response = openai_call(
             model=config.PLANNER_LLM_MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -114,13 +90,13 @@ Plan:
             ],
             temperature=config.PLANNER_LLM_TEMPERATURE,
             max_tokens=config.PLANNER_LLM_MAX_TOKENS,
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"} # Corrected response_format
         )
         response_content = response.choices[0].message.content.strip()
         logger.debug(f"Planner LLM Raw Response: {response_content}")
         
-        # Record the API call
-        rate_limiter.record_call("openai")
+        # Record the API call - REMOVED (handled in openai_helper)
+        # rate_limiter.record_call("openai")
 
         # --- Parse the Response --- 
         if not response_content:
@@ -131,7 +107,18 @@ Plan:
             plan_data = json.loads(response_content)
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON from LLM response: {e}")
-            return _create_fallback_plan(task)
+            # Attempt to clean the response if it looks like markdown
+            if response_content.startswith("```json") and response_content.endswith("```"):
+                logger.info("Attempting to clean markdown JSON response...")
+                cleaned_content = '\n'.join(response_content.split('\n')[1:-1])
+                try:
+                    plan_data = json.loads(cleaned_content)
+                    logger.info("Successfully parsed cleaned JSON.")
+                except json.JSONDecodeError as e2:
+                    logger.error(f"Failed to parse cleaned JSON: {e2}")
+                    return _create_fallback_plan(task)
+            else:
+                 return _create_fallback_plan(task)
 
         # Handle different response formats
         if isinstance(plan_data, list):
@@ -148,52 +135,77 @@ Plan:
                 logger.error(f"Invalid list format in LLM response: {plan_data}")
                 return _create_fallback_plan(task)
         elif isinstance(plan_data, dict):
-            # If it's a dictionary with a 'plan' key
-            if isinstance(plan_data.get('plan'), list):
-                parsed_plan = plan_data['plan']
-            # If it's a dictionary of key-value pairs
+            # If it's a dictionary with a 'plan' key (common pattern)
+            plan_key_found = None
+            for key in ["plan", "steps", "plan_steps"]:
+                 if key in plan_data and isinstance(plan_data[key], list):
+                     plan_key_found = key
+                     break
+            
+            if plan_key_found:
+                parsed_plan = plan_data[plan_key_found]
+            # Special case: handle dictionaries where keys are steps
+            elif all(isinstance(k, str) for k in plan_data.keys()):
+                # Check if dict keys look like steps 
+                step_keys = [k for k in plan_data.keys() if any(k.startswith(prefix) for prefix in valid_prefixes)]
+                if step_keys:
+                    logger.info(f"LLM returned dictionary with {len(step_keys)} keys that appear to be plan steps")
+                    parsed_plan = step_keys
+                # Check if the dictionary looks like a task itself
+                elif "task" in plan_data and isinstance(plan_data["task"], str):
+                    task_name = plan_data["task"]
+                    task_details = plan_data.get("details", "")
+                    logger.info(f"LLM returned a task definition instead of a plan. Creating plan for task: {task_name}")
+                    parsed_plan = [
+                        f"log_thought: Processing task '{task_name}'",
+                        f"execute_task: {task_name} - {task_details}",
+                        "analyze_logs: Review execution results"
+                    ]
+                # Also check if there's no explicit task key but we have details that look like a task
+                elif "details" in plan_data and isinstance(plan_data["details"], str) and not any(k in plan_data for k in ["plan", "steps"]):
+                    task_details = plan_data["details"]
+                    logger.info(f"LLM returned details without explicit plan. Creating plan based on details")
+                    parsed_plan = [
+                        "log_thought: Processing task based on provided details",
+                        f"execute_task: {task.get('task')} - {task_details}",
+                        "analyze_logs: Review execution results"
+                    ]
+                else:
+                    logger.warning(f"LLM returned a dictionary without valid plan steps in keys: {list(plan_data.keys())[:3]}...")
+                    return _create_fallback_plan(task)
+            # If it's a dictionary of key-value pairs (less likely for plan)
             else:
-                parsed_plan = []
-                for key, value in plan_data.items():
-                    if isinstance(key, str) and isinstance(value, str):
-                        parsed_plan.append(key)
-                        parsed_plan.append(value)
-                    else:
-                        logger.warning(f"Skipping invalid plan step: {key} -> {value}")
+                 logger.warning(f"LLM returned a dictionary but no obvious plan list key found: {list(plan_data.keys())[:3]}...")
+                 return _create_fallback_plan(task)
         else:
             logger.error(f"Unexpected response type from LLM: {type(plan_data)}")
             return _create_fallback_plan(task)
 
         # Validate plan steps
         if not parsed_plan:
-            logger.error("LLM returned empty plan")
+            logger.error("LLM returned empty or unparseable plan")
             return _create_fallback_plan(task)
 
         # Ensure all steps are strings and have the correct format
         valid_steps = []
         for step in parsed_plan:
-            if isinstance(step, str):
-                # Check if the step matches any of our expected formats
-                if any(step.startswith(prefix) for prefix in [
-                    "log_thought:", "execute_task:", "analyze_logs:", 
-                    "update_task_list:", "tool_call:", "code_generation:",
-                    "apply_code:", "generate_unit_tests:", "run_tests:",
-                    "analyze_test_coverage:", "generate_coverage_report:"
-                ]):
-                    valid_steps.append(step)
-                else:
-                    logger.warning(f"Skipping invalid step format: {step}")
+            if isinstance(step, str) and any(step.startswith(prefix) for prefix in valid_prefixes):
+                 valid_steps.append(step)
             else:
-                logger.warning(f"Skipping non-string step: {step}")
+                logger.warning(f"Skipping invalid step format or non-string step: {step}")
 
         if not valid_steps:
-            logger.error("No valid steps found in plan")
+            logger.error("No valid steps found in plan after validation")
             return _create_fallback_plan(task)
 
         return valid_steps
 
+    # Catch errors from openai_call or JSON parsing
+    except (ValueError, RuntimeError, json.JSONDecodeError) as e:
+        logger.error(f"Error creating plan ({type(e).__name__}): {e}", exc_info=True)
+        return _create_fallback_plan(task)
     except Exception as e:
-        logger.error(f"Error creating plan: {e}", exc_info=True)
+        logger.error(f"Unexpected error creating plan: {e}", exc_info=True)
         return _create_fallback_plan(task)
 
 def _create_fallback_plan(task: Task) -> Plan:

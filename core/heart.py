@@ -6,6 +6,7 @@ import json
 from datetime import datetime
 import psutil
 from dotenv import load_dotenv, find_dotenv
+import logging.config
 
 # Load environment variables for API keys
 env_path = find_dotenv()
@@ -15,8 +16,8 @@ if env_path:
 else:
     print("No .env file found. Using existing environment variables.")
 
-# Import configurations and shared settings first
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Ensure we can find the config module regardless of where the script is run from
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
 # Import functionalities from new modules
@@ -171,12 +172,7 @@ def heart_beat() -> None:
                 logger.info(f"Starting new investigation: {task}")
                 
                 # Create a plan - like mapping out how to solve a mystery
-                if not rate_limiter.can_make_call("openai"):
-                    logger.warning("API limits reached. Leaving simple notes for future self...")
-                    plan = ["log_thought: API limits reached, future me should try again later"]
-                else:
-                    plan = create_plan(task, context)
-                    rate_limiter.record_call("openai")
+                plan = create_plan(task, context)
                 
                 logger.info(f"Created a plan with {len(plan)} steps: {plan}")
                 

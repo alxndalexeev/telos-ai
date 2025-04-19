@@ -80,29 +80,53 @@ def get_task() -> Task:
         'task': 'self-improvement',
         'details': 'No specific tasks. Engaging in self-improvement cycle.'
     }
+    
+    tasks_file = config.TASKS_FILE
+    
+    # Create parent directory if needed
+    os.makedirs(os.path.dirname(tasks_file), exist_ok=True)
+    
     try:
-        if not os.path.exists(config.TASKS_FILE):
-            logger.info("Tasks file not found. Returning default task.")
+        if not os.path.exists(tasks_file):
+            # Create an empty tasks file for future use
+            try:
+                with open(tasks_file, 'w', encoding='utf-8') as f:
+                    json.dump([], f)
+                logger.debug("Created empty tasks file.")
+            except Exception as e:
+                logger.error(f"Error creating tasks file: {e}")
             return default_task
-        with open(config.TASKS_FILE, 'r', encoding='utf-8') as f:
+            
+        with open(tasks_file, 'r', encoding='utf-8') as f:
             # Handle empty file case before JSON decoding
-            content = f.read()
+            content = f.read().strip()
             if not content:
-                 logger.info("Tasks file is empty. Returning default task.")
-                 return default_task
+                logger.debug("Tasks file is empty. Returning default task.")
+                # Initialize with an empty array
+                with open(tasks_file, 'w', encoding='utf-8') as f:
+                    json.dump([], f)
+                return default_task
+                
             tasks = json.loads(content)
 
         if isinstance(tasks, list) and tasks:
             logger.info(f"Retrieved task: {tasks[0]}")
             return tasks[0] # Return the first task
         else:
-            logger.info("Tasks file is empty or invalid format after loading. Returning default task.")
+            logger.debug("Tasks file contains an empty list. Returning default task.")
             return default_task
     except json.JSONDecodeError as e:
-        logger.error(f"Error decoding tasks JSON from {config.TASKS_FILE}: {e}. Returning default task.")
+        logger.error(f"Error decoding tasks JSON from {tasks_file}: {e}. Returning default task.")
+        # Reset to an empty array since the content is invalid
+        try:
+            with open(tasks_file, 'w', encoding='utf-8') as f:
+                json.dump([], f)
+            logger.debug("Reset tasks file to an empty array.")
+        except Exception as write_error:
+            logger.error(f"Failed to reset tasks file: {write_error}")
         return default_task
     except Exception as e:
-        logger.error(f"Error reading tasks file {config.TASKS_FILE}: {e}. Returning default task.")
+        logger.error(f"Error reading tasks file {tasks_file}: {e}. Returning default task.")
         return default_task
 
 def update_task() -> None:
@@ -263,31 +287,46 @@ def get_task_progress() -> Optional[Dict[str, Any]]:
     Get the current task progress state if exists.
     Returns None if there's no ongoing task.
     """
-    if not os.path.exists(config.TASK_PROGRESS_FILE):
-        logger.info("No task progress file found.")
+    progress_file = config.TASK_PROGRESS_FILE
+    
+    # Create parent directory if it doesn't exist
+    os.makedirs(os.path.dirname(progress_file), exist_ok=True)
+    
+    if not os.path.exists(progress_file):
+        # Create an empty file for future use
+        try:
+            with open(progress_file, 'w', encoding='utf-8') as f:
+                json.dump({}, f)
+            logger.debug("Created empty task progress file.")
+        except Exception as e:
+            logger.error(f"Error creating task progress file: {e}")
         return None
         
     try:
-        with open(config.TASK_PROGRESS_FILE, 'r', encoding='utf-8') as f:
-            content = f.read()
+        with open(progress_file, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
             if not content:
-                logger.info("Task progress file is empty.")
+                logger.debug("Task progress file is empty. No task in progress.")
                 return None
                 
             progress = json.loads(content)
             if not isinstance(progress, dict):
                 logger.warning("Task progress file contains invalid format (not a dict).")
+                clear_task_progress()
                 return None
                 
             # Validate that it has the required fields
             if not all(key in progress for key in ["task", "plan", "current_step"]):
-                logger.warning("Task progress is missing required fields.")
+                logger.debug("Task progress file doesn't contain a valid task progress structure.")
+                # Don't log a warning for an empty or new file
                 return None
                 
-            logger.info(f"Retrieved task progress: {progress['task']['task']}, step {progress['current_step']} of {len(progress['plan'])}")
+            logger.debug(f"Retrieved task progress: {progress['task']['task']}, step {progress['current_step']} of {len(progress['plan'])}")
             return progress
     except json.JSONDecodeError as e:
-        logger.error(f"Error decoding task progress JSON: {e}")
+        logger.debug(f"Task progress file exists but doesn't contain valid JSON: {e}")
+        # Reset the file instead of keeping invalid content
+        clear_task_progress()
         return None
     except Exception as e:
         logger.error(f"Error reading task progress file: {e}")
