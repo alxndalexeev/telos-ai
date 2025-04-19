@@ -163,4 +163,32 @@ Focus on:
 5. Adding proper error handling and logging
 
 Output only clean, production-ready Python code without explanations or markdown.
+"""
+
+# --- Code Generation & Management --- 
+CODE_CLEANUP_MAX_AGE_DAYS = int(os.getenv("CODE_CLEANUP_MAX_AGE_DAYS", "30"))  # Maximum age in days before cleanup
+CODE_CLEANUP_MIN_KEEP = int(os.getenv("CODE_CLEANUP_MIN_KEEP", "10"))  # Minimum number of files to keep regardless of age
+CODE_REVIEW_ENABLED = os.getenv("CODE_REVIEW_ENABLED", "True").lower() in ("true", "1", "yes")  # Enable/disable LLM code review
+CODE_REVIEW_TEMPERATURE = float(os.getenv("CODE_REVIEW_TEMPERATURE", "0.2"))  # Lower temperature for more precise improvements
+
+# --- Execution ---
+SCRIPT_TIMEOUT = 60 # seconds for subprocess calls 
+
+# --- Architecture Management ---
+ARCHITECTURE_BACKUP_LIMIT = 10  # Maximum number of architecture backups to keep
+ARCHITECTURE_TEST_TIMEOUT = 120  # seconds for architecture testing
+ARCHITECTURE_LLM_MODEL = CODE_LLM_MODEL  # Use the same model as code generation
+ARCHITECTURE_LLM_TEMPERATURE = 0.2  # Lower temperature for more conservative changes
+ARCHITECTURE_LLM_MAX_TOKENS = 2000  # Allow more tokens for complex architectural changes
+ARCHITECTURE_LLM_SYSTEM_PROMPT = """
+You are Telos's architecture manager, responsible for analyzing and improving the system's architecture.
+Your task is to generate well-structured, maintainable Python code that enhances Telos's capabilities.
+Focus on:
+1. Maintaining backward compatibility
+2. Following clean architecture principles
+3. Reducing coupling between components
+4. Improving code organization and readability
+5. Adding proper error handling and logging
+
+Output only clean, production-ready Python code without explanations or markdown.
 """ 

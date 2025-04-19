@@ -5,7 +5,8 @@ import logging
 # import openai # Removed direct import
 import json # Added for parsing tasks
 import ast # Added for code validation
-from datetime import datetime # Added for timestamping generated code
+from datetime import datetime, timedelta # Added timedelta for cleanup
+import time # Added for cleanup
 from typing import List, Any
 import re
 import shutil # Added for _apply_code_with_git
@@ -184,15 +185,133 @@ def _execute_script(step: str) -> str:
 GENERATED_CODE_DIR = os.path.join(config.MEMORY_DIR, "generated_code")
 os.makedirs(GENERATED_CODE_DIR, exist_ok=True)
 
+def _cleanup_generated_code(max_age_days=30, min_keep=10):
+    """Clean up old generated code files to prevent clutter.
+    
+    Args:
+        max_age_days: Maximum age of files to keep in days
+        min_keep: Minimum number of most recent files to keep regardless of age
+    """
+    logger.info(f"Cleaning up generated code files older than {max_age_days} days, keeping at least {min_keep} most recent files")
+    
+    try:
+        # Get all Python files in the generated code directory
+        if not os.path.exists(GENERATED_CODE_DIR):
+            logger.warning(f"Generated code directory {GENERATED_CODE_DIR} does not exist")
+            return
+            
+        files = [f for f in os.listdir(GENERATED_CODE_DIR) if f.endswith('.py')]
+        if not files:
+            logger.info("No generated code files found to clean up")
+            return
+            
+        # Sort files by creation time (newest first)
+        files_with_time = [(f, os.path.getctime(os.path.join(GENERATED_CODE_DIR, f))) for f in files]
+        files_with_time.sort(key=lambda x: x[1], reverse=True)
+        
+        # Always keep the min_keep most recent files
+        files_to_keep = files_with_time[:min_keep]
+        files_to_check = files_with_time[min_keep:]
+        
+        # Set cutoff time for old files
+        cutoff_time = time.time() - (max_age_days * 24 * 60 * 60)
+        
+        # Delete old files
+        deleted_count = 0
+        for filename, ctime in files_to_check:
+            if ctime < cutoff_time:
+                file_path = os.path.join(GENERATED_CODE_DIR, filename)
+                os.remove(file_path)
+                deleted_count += 1
+                logger.debug(f"Deleted old generated code file: {filename}")
+        
+        if deleted_count > 0:
+            logger.info(f"Cleaned up {deleted_count} old generated code files")
+        else:
+            logger.info("No old generated code files to clean up")
+            
+    except Exception as e:
+        logger.error(f"Error cleaning up generated code files: {e}")
+
+def _review_code_with_llm(generated_code, target_file_name=None, prompt=None):
+    """Send generated code to LLM for review and improvements.
+    
+    Args:
+        generated_code: The raw code to review
+        target_file_name: Optional name of the target file for context
+        prompt: Optional original prompt that generated the code
+        
+    Returns:
+        Improved code after LLM review
+    """
+    logger.info(f"Reviewing generated code with LLM for target: {target_file_name or 'unknown'}")
+    
+    review_prompt = f"""
+Review and improve the following code. Fix any bugs, improve readability, 
+add error handling, and ensure best practices are followed.
+
+{f"Target file: {target_file_name}" if target_file_name else ""}
+{f"Original prompt: {prompt}" if prompt else ""}
+
+# Code to review:
+```python
+{generated_code}
+```
+
+Return ONLY the improved code without explanations or markdown formatting.
+"""
+    
+    try:
+        response = openai_call(
+            model=config.CODE_LLM_MODEL,
+            messages=[
+                {"role": "system", "content": "You are an expert code reviewer. Your task is to improve code by fixing bugs, adding error handling, improving readability, and ensuring best practices are followed. Return only the improved code without explanations or markdown."},
+                {"role": "user", "content": review_prompt}
+            ],
+            temperature=config.CODE_REVIEW_TEMPERATURE,  # Use temperature from config
+            max_tokens=config.CODE_LLM_MAX_TOKENS,
+            response_format={"type": "text"},  # Plain text for code
+        )
+        
+        improved_code = response.choices[0].message.content.strip()
+        
+        # Remove any markdown code blocks if present
+        if improved_code.startswith("```") and improved_code.endswith("```"):
+            lines = improved_code.split('\n')
+            if len(lines) > 2:
+                # Remove first and last lines that contain ```
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                improved_code = '\n'.join(lines)
+        
+        # Compare code sizes
+        original_size = len(generated_code.splitlines())
+        improved_size = len(improved_code.splitlines())
+        change_percent = ((improved_size - original_size) / original_size) * 100 if original_size > 0 else 0
+        
+        logger.info(f"Code review complete. Original lines: {original_size}, Improved lines: {improved_size}, Change: {change_percent:.1f}%")
+        
+        return improved_code
+    
+    except Exception as e:
+        logger.error(f"Error reviewing code with LLM: {e}")
+        # Return original code if review fails
+        return generated_code
+
 def _execute_code_generation(step: str) -> str:
     """Handles the 'code_generation:' plan step. Saves code to file."""
     prompt = step.replace("code_generation:", "").strip()
     logger.info(f"Executing step: code_generation for prompt: '{prompt[:100]}...'")
     try:
+        # Clean up old generated files first
+        _cleanup_generated_code(
+            max_age_days=config.CODE_CLEANUP_MAX_AGE_DAYS,
+            min_keep=config.CODE_CLEANUP_MIN_KEEP
+        )
+        
         generated_code = generate_code_with_llm(prompt)
-
-        # Save generated code to a timestamped file
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Extract target file name from prompt if possible
         target_file = None
@@ -203,6 +322,16 @@ def _execute_code_generation(step: str) -> str:
             if matches:
                 target_file = matches[0]
                 break
+                
+        # Review and improve the code with LLM if enabled
+        if config.CODE_REVIEW_ENABLED:
+            improved_code = _review_code_with_llm(generated_code, target_file, prompt)
+        else:
+            improved_code = generated_code
+            logger.info("Code review is disabled. Using original generated code.")
+
+        # Save generated code to a timestamped file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # If no target file found, use default naming
         if target_file:
@@ -213,9 +342,9 @@ def _execute_code_generation(step: str) -> str:
         filepath = os.path.join(GENERATED_CODE_DIR, filename)
 
         with open(filepath, "w", encoding='utf-8') as f:
-            f.write(generated_code)
+            f.write(improved_code)
 
-        result_str = f"Code generation successful. Saved to {filepath}. Snippet: {generated_code[:100]}..."
+        result_str = f"Code generation {'and review ' if config.CODE_REVIEW_ENABLED else ''}successful. Saved to {filepath}. Snippet: {improved_code[:100]}..."
         logger.info(result_str)
         return result_str # Return success message including the path
     except Exception as e:
