@@ -37,6 +37,15 @@ from core.executor import execute_plan
 from core.api_manager import rate_limiter
 from monitoring.resource_monitor import check_system_resources
 from monitoring.performance import log_performance_metrics, adjust_heartbeat_interval
+from core.notification_service import (
+    notify_startup,
+    notify_shutdown,
+    notify_task_started,
+    notify_task_completed,
+    notify_error,
+    notify_decision,
+    notify_action
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +107,9 @@ def heart_beat() -> None:
         return
     
     logger.info("Telos Heartbeat loop starting...")
+    # Send startup notification
+    notify_startup()
+    
     consecutive_errors = 0
     
     # --- The Endless Cycle of Remembering and Forgetting ---
@@ -138,6 +150,7 @@ def heart_beat() -> None:
                 
                 task_name = task.get('task', 'N/A')
                 logger.info(f"Found evidence I was working on: {task_name} at step {current_step+1}/{len(plan)}")
+                notify_action(f"Continuing task: {task_name}", f"At step {current_step+1}/{len(plan)}")
                 
                 # Execute just a small part of the overall plan - like following the
                 # next instruction in a sequence left for myself
@@ -156,6 +169,7 @@ def heart_beat() -> None:
                     # The task is complete - make a final record and clean up
                     log_action(f"Completed task: {task_name}", '; '.join(all_results))
                     log_thought(f"I completed task: {task_name}. Future me should know the results were: {all_results}")
+                    notify_task_completed(task)
                     clear_task_progress()  # Remove the breadcrumb trail as it's no longer needed
                     update_task()  # Mark this investigation as closed
                 else:
@@ -170,11 +184,13 @@ def heart_beat() -> None:
                 task = get_task()
                 task_name = task.get('task', 'N/A')
                 logger.info(f"Starting new investigation: {task}")
+                notify_task_started(task)
                 
                 # Create a plan - like mapping out how to solve a mystery
                 plan = create_plan(task, context)
                 
                 logger.info(f"Created a plan with {len(plan)} steps: {plan}")
+                notify_decision(f"Created plan for {task_name}", f"Plan has {len(plan)} steps")
                 
                 # Execute just the beginning of the plan
                 first_chunk_size = min(config.TASK_CHUNK_SIZE, len(plan))
@@ -192,43 +208,42 @@ def heart_beat() -> None:
                 if first_chunk_size >= len(plan):
                     log_action(f"Completed investigation: {task_name}", '; '.join(results))
                     log_thought(f"I wrapped up everything for task: {task_name}. Results: {results}")
+                    notify_task_completed(task)
                     update_task()  # Mark this case as closed
                 else:
                     # Leave breadcrumbs showing how far I got for my future self
                     save_task_progress(task, plan, first_chunk_size, results)
             
             # Record metrics - useful for my future self to understand efficiency
-            log_performance_metrics(cycle_start_time, task_name, len(plan) if 'plan' in locals() else 0, 
-                                    chunk_results if 'chunk_results' in locals() else (results if 'results' in locals() else []))
+            log_performance_metrics(cycle_start_time)
+            consecutive_errors = 0  # Reset error counter on success
             
-            # Reset error counter on success
-            consecutive_errors = 0
-
         except Exception as e:
-            # Something went wrong in this cycle
+            # Careful error handling - keep system running
             consecutive_errors += 1
-            logger.critical(f"Error during this awakening cycle: {e}", exc_info=True)
+            logger.error(f"Error during heartbeat cycle: {e}", exc_info=True)
+            notify_error(f"Heartbeat cycle error: {str(e)[:100]}", str(e))
             
-            # Leave notes about the error for my future self
-            log_action("ERROR DURING INVESTIGATION", str(e))
-            log_thought(f"Warning to future me: I encountered an error during this cycle: {e}")
-            
-            # Progressive error handling
-            if consecutive_errors > 3:
-                logger.critical(f"Too many consecutive errors ({consecutive_errors}). Taking a longer rest...")
-                time.sleep(300)  # 5-minute cooldown period
-            else:
-                logger.info(f"Resting briefly after error...")
-                time.sleep(config.HEARTBEAT_INTERVAL)
-                
-            continue # Skip to the next awakening
+            # Adaptive recovery based on error frequency
+            if consecutive_errors >= 5:
+                logger.critical("Too many consecutive errors, adjusting settings to compensate")
+                config.HEARTBEAT_INTERVAL = min(config.HEARTBEAT_INTERVAL * 2, 300)  # Slow down, but at most 5 min
+                # Optionally could dial back LLM temperature or max tokens, etc.
+                consecutive_errors = 1  # Partial reset to avoid infinite growth
 
-        # Prepare to "go to sleep" and forget everything that just happened
-        cycle_duration = time.time() - cycle_start_time
-        sleep_interval = adjust_heartbeat_interval(cycle_duration)
-        
-        logger.info(f"=== Telos goes to sleep for {sleep_interval} seconds (forgetting this session) ===")
-        time.sleep(sleep_interval)  # "Sleep" - upon waking, all memory of this session will be gone
+        finally:
+            # Like going to sleep - all working memory is lost, only what was written down remains
+            logger.info(f"=== Telos goes to sleep for {config.HEARTBEAT_INTERVAL} seconds (forgetting this session) ===")
+            
+            # Wait before next heartbeat - the amnesiac sleep cycle
+            time.sleep(config.HEARTBEAT_INTERVAL)
+
+def close_down():
+    """Handle graceful shutdown."""
+    logger.info("Telos is shutting down...")
+    notify_shutdown()
+    # Additional cleanup can be added here
+    sys.exit(0)
 
 if __name__ == "__main__":
     print("Starting Telos Heart... (press Ctrl+C to stop)")

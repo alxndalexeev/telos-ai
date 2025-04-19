@@ -191,4 +191,10 @@ Focus on:
 5. Adding proper error handling and logging
 
 Output only clean, production-ready Python code without explanations or markdown.
-""" 
+"""
+
+# --- Notification Settings ---
+TELEGRAM_NOTIFICATIONS_ENABLED = os.getenv("TELEGRAM_NOTIFICATIONS_ENABLED", "True").lower() in ("true", "1", "yes")
+TELEGRAM_API_KEY = os.getenv("TG_API_KEY", "")  # Bot API token from .env
+TELEGRAM_CHAT_ID = os.getenv("TG_CHAT_ID", "")  # Chat/group ID from .env
+TELEGRAM_NOTIFICATION_LEVEL = os.getenv("TELEGRAM_NOTIFICATION_LEVEL", "important")  # Options: all, important, minimal 

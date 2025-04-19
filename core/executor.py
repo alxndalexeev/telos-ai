@@ -22,6 +22,7 @@ from architecture.manager import implement_architectural_change, test_architectu
 from tests.framework.test_framework import run_tests, generate_test_for_module, generate_integration_test
 from tests.framework.test_framework import analyze_test_coverage, generate_test_report, generate_coverage_report
 from telos_logging.logger import log_thought
+from core.notification_service import notify_code_generation, notify_code_application
 
 # Define type alias from planner
 Plan = List[str]
@@ -344,6 +345,10 @@ def _execute_code_generation(step: str) -> str:
         with open(filepath, "w", encoding='utf-8') as f:
             f.write(improved_code)
 
+        # Send notification about the generated code
+        purpose_summary = prompt[:50] + "..." if len(prompt) > 50 else prompt
+        notify_code_generation(filename, purpose_summary)
+
         result_str = f"Code generation {'and review ' if config.CODE_REVIEW_ENABLED else ''}successful. Saved to {filepath}. Snippet: {improved_code[:100]}..."
         logger.info(result_str)
         return result_str # Return success message including the path
@@ -430,6 +435,9 @@ def _apply_code(step: str) -> str:
         latest_file = max(generated_files, key=lambda f: os.path.getctime(os.path.join(generated_dir, f)))
         generated_code_file_path = os.path.join(os.path.relpath(generated_dir, config.BASE_DIR), latest_file)
         logger.info(f"Found most recent generated code file: {generated_code_file_path}")
+    
+    # Send notification about code application
+    notify_code_application(target_file_relative, generated_code_file_path)
     
     return _apply_code_with_git(target_file_relative, generated_code_file_path, test_cmd)
 
